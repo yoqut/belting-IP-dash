@@ -103,6 +103,55 @@ export async function getAccessToken(): Promise<string> {
   return fresh.access_token;
 }
 
+export interface ExtensionInfo {
+  number: string;
+  name: string;
+}
+
+export async function queryExtensions(): Promise<ExtensionInfo[]> {
+  const token = await getAccessToken();
+  const results: ExtensionInfo[] = [];
+  const PAGE_SIZE = 100;
+
+  const fetchPage = async (page: number) => {
+    const params = new URLSearchParams({
+      access_token: token,
+      page_number: String(page),
+      page_size: String(PAGE_SIZE),
+    });
+    const res = await fetchWithTimeout(
+      `${BASE_URL}/openapi/v1.0/extension/list?${params.toString()}`,
+      { headers: COMMON_HEADERS }
+    );
+    if (!res.ok) return null;
+    return res.json().catch(() => null);
+  };
+
+  const first = await fetchPage(1);
+  if (!first || first.errcode !== 0) return [];
+
+  for (const e of first.data ?? []) {
+    if (e.number && e.caller_id_name) results.push({ number: e.number, name: e.caller_id_name });
+  }
+
+  const total = first.total_number ?? (first.data?.length ?? 0);
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  if (totalPages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: totalPages - 1 }, (_, i) => fetchPage(i + 2))
+    );
+    for (const data of rest) {
+      if (!data || data.errcode !== 0) continue;
+      for (const e of data.data ?? []) {
+        if (e.number && e.caller_id_name) results.push({ number: e.number, name: e.caller_id_name });
+      }
+    }
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function queryCDR(
   startTime: string,
   endTime: string,
