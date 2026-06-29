@@ -176,28 +176,40 @@ export default function SettingsPage() {
 
               return (
                 <div key={i} className="grid grid-cols-[1fr_32px_120px_32px_1fr_32px] items-center gap-0 px-6 py-3 hover:bg-gray-50/60 dark:hover:bg-slate-700/30 transition-colors group">
-                  {/* Yeastar dropdown */}
+                  {/* Yeastar — dropdown (agar ro'yxat bo'lsa) yoki text input */}
                   <div className="relative">
-                    <select
-                      value={e.yeastarExtName}
-                      onChange={ev => update(i, "yeastarExtName", ev.target.value)}
-                      className={`w-full pl-3 pr-7 py-2 text-xs rounded-lg border transition-colors appearance-none bg-white dark:bg-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 ${
-                        ySelected ? "border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-200" : "border-dashed border-gray-200 dark:border-slate-600 text-gray-400 dark:text-slate-500"
-                      }`}
-                    >
-                      <option value="">— tanlang —</option>
-                      {e.yeastarExtName && !yList.find(y => y.name === e.yeastarExtName) && (
-                        <option value={e.yeastarExtName}>{e.yeastarExtName}</option>
-                      )}
-                      {availableY.map(y => (
-                        <option key={y.number} value={y.name}>{y.name}</option>
-                      ))}
-                    </select>
-                    <svg className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    {ySelected && (
-                      <div className="mt-1 text-[10px] text-gray-400 pl-0.5">#{ySelected.number}</div>
+                    {yList.length > 0 ? (
+                      <>
+                        <select
+                          value={e.yeastarExtName}
+                          onChange={ev => update(i, "yeastarExtName", ev.target.value)}
+                          className={`w-full pl-3 pr-7 py-2 text-xs rounded-lg border transition-colors appearance-none bg-white dark:bg-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 ${
+                            ySelected ? "border-gray-200 dark:border-slate-600 text-gray-700 dark:text-slate-200" : "border-dashed border-gray-200 dark:border-slate-600 text-gray-400 dark:text-slate-500"
+                          }`}
+                        >
+                          <option value="">— tanlang —</option>
+                          {e.yeastarExtName && !yList.find(y => y.name === e.yeastarExtName) && (
+                            <option value={e.yeastarExtName}>{e.yeastarExtName}</option>
+                          )}
+                          {availableY.map(y => (
+                            <option key={y.number} value={y.name}>{y.name}</option>
+                          ))}
+                        </select>
+                        <svg className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        {ySelected && (
+                          <div className="mt-1 text-[10px] text-gray-400 pl-0.5">#{ySelected.number}</div>
+                        )}
+                      </>
+                    ) : (
+                      <input
+                        type="text"
+                        value={e.yeastarExtName}
+                        onChange={ev => update(i, "yeastarExtName", ev.target.value)}
+                        placeholder="Ism (PBX)"
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-dashed border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-gray-700 dark:text-slate-200 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-300 transition-colors"
+                      />
                     )}
                   </div>
 
