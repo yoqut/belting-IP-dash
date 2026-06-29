@@ -51,11 +51,9 @@ async function readTokenKV(): Promise<TokenCache | null> {
 
 async function writeTokenKV(cache: TokenCache): Promise<void> {
   memCache = cache;
-  supabase
+  void supabase
     .from("settings")
-    .upsert({ key: "yeastar_token", value: cache }, { onConflict: "key" })
-    .then(() => {})
-    .catch(() => {});
+    .upsert({ key: "yeastar_token", value: cache }, { onConflict: "key" });
 }
 
 function saveTokens(access_token: string, refresh_token: string): TokenCache {
