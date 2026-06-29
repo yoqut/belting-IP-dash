@@ -1,8 +1,6 @@
 import { CDRResponse } from "@/types/cdr";
-import fs from "fs";
-import path from "path";
+import { createClient } from "@supabase/supabase-js";
 
-// Yeastar uses a self-signed certificate on the local network
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const BASE_URL = process.env.YEASTAR_URL?.replace(/\/$/, "") ?? "";
@@ -14,14 +12,16 @@ const COMMON_HEADERS = {
   "User-Agent": "YeastarDashboard/1.0",
 };
 
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
 function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 15000): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
 }
-
-// Token faylda saqlanadi — server qayta ishlaganda ham yo'qolmaydi
-const TOKEN_FILE = path.join(process.cwd(), ".yeastar-token.json");
 
 interface TokenCache {
   access_token: string;
@@ -29,69 +29,72 @@ interface TokenCache {
   expiry: number;
 }
 
-function readTokenFile(): TokenCache | null {
-  try {
-    const raw = fs.readFileSync(TOKEN_FILE, "utf-8");
-    return JSON.parse(raw) as TokenCache;
-  } catch {
-    return null;
-  }
+let memCache: TokenCache | null = null;
+
+async function readTokenKV(): Promise<TokenCache | null> {
+  if (memCache && Date.now() < memCache.expiry) return memCache;
+  const { data } = await supabase
+    .from("settings")
+    .select("value")
+    .eq("key", "yeastar_token")
+    .single();
+  if (!data?.value) return null;
+  const cache = data.value as TokenCache;
+  if (Date.now() >= cache.expiry) return null;
+  memCache = cache;
+  return cache;
 }
 
-function writeTokenFile(cache: TokenCache): void {
-  try {
-    fs.writeFileSync(TOKEN_FILE, JSON.stringify(cache), "utf-8");
-  } catch {
-    // faylga yozib bo'lmasa, in-memory davom etadi
-  }
+async function writeTokenKV(cache: TokenCache): Promise<void> {
+  memCache = cache;
+  await supabase
+    .from("settings")
+    .upsert({ key: "yeastar_token", value: cache }, { onConflict: "key" });
 }
 
-let memCache: TokenCache | null = readTokenFile();
-
-function saveTokens(access_token: string, refresh_token: string): void {
-  memCache = { access_token, refresh_token, expiry: Date.now() + 25 * 60 * 1000 };
-  writeTokenFile(memCache);
+function saveTokens(access_token: string, refresh_token: string): TokenCache {
+  const cache: TokenCache = {
+    access_token,
+    refresh_token,
+    expiry: Date.now() + 25 * 60 * 1000,
+  };
+  writeTokenKV(cache); // fire-and-forget
+  return cache;
 }
 
-async function fetchNewToken(): Promise<void> {
+async function fetchNewToken(): Promise<TokenCache> {
   const res = await fetchWithTimeout(`${BASE_URL}/openapi/v1.0/get_token`, {
     method: "POST",
     headers: COMMON_HEADERS,
     body: JSON.stringify({ username: CLIENT_ID, password: CLIENT_SECRET }),
   });
-
   const data = await res.json();
   if (data.errcode !== 0) throw new Error(data.errmsg || "Token olishda xato");
-  saveTokens(data.access_token, data.refresh_token);
+  return saveTokens(data.access_token, data.refresh_token);
 }
 
-async function doRefresh(refreshToken: string): Promise<boolean> {
+async function doRefresh(refreshToken: string): Promise<TokenCache | null> {
   const res = await fetchWithTimeout(`${BASE_URL}/openapi/v1.0/refresh_token`, {
     method: "POST",
     headers: COMMON_HEADERS,
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
-
   const data = await res.json();
-  if (data.errcode !== 0) return false;
-
-  saveTokens(data.access_token, data.refresh_token);
-  return true;
+  if (data.errcode !== 0) return null;
+  return saveTokens(data.access_token, data.refresh_token);
 }
 
 export async function getAccessToken(): Promise<string> {
-  // Fayl yoki memorydagi token hali amal qilsa — ishlatamiz
-  if (memCache && Date.now() < memCache.expiry) return memCache.access_token;
+  const cached = await readTokenKV();
+  if (cached) return cached.access_token;
 
-  // Refresh token bilan yangilaymiz (limit sanalmaydi)
   if (memCache?.refresh_token) {
-    const ok = await doRefresh(memCache.refresh_token);
-    if (ok) return memCache!.access_token;
+    const refreshed = await doRefresh(memCache.refresh_token);
+    if (refreshed) return refreshed.access_token;
   }
 
-  // Oxirgi chora — yangi token (limit sanaydi)
-  await fetchNewToken();
-  return memCache!.access_token;
+  const fresh = await fetchNewToken();
+  return fresh.access_token;
 }
 
 export async function queryCDR(
@@ -124,7 +127,6 @@ export interface RecordingInfo {
   rec_id: number;
 }
 
-// Barcha yozuvlarni bir so'rovda olib, uid → rec_id xaritasini qaytaradi
 export async function queryRecordingsByCallers(
   _callers: string[],
   startUnix: number,
@@ -192,7 +194,6 @@ export async function getRecordingDownloadUrl(recId: number): Promise<string | n
 }
 
 export function formatPBXDate(date: Date): string {
-  // Yeastar P-Series Software Edition: "DD/MM/YYYY HH:mm:ss"
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
     `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ` +
@@ -224,7 +225,7 @@ export function getDateRange(filter: string): { start: string; end: string } {
       start = new Date(now.getFullYear(), 0, 1);
       end = new Date(now);
       break;
-    default: // today
+    default:
       start = today;
       end = new Date(now);
   }
