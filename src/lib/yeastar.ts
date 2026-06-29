@@ -33,23 +33,29 @@ let memCache: TokenCache | null = null;
 
 async function readTokenKV(): Promise<TokenCache | null> {
   if (memCache && Date.now() < memCache.expiry) return memCache;
-  const { data } = await supabase
-    .from("settings")
-    .select("value")
-    .eq("key", "yeastar_token")
-    .single();
-  if (!data?.value) return null;
-  const cache = data.value as TokenCache;
-  if (Date.now() >= cache.expiry) return null;
-  memCache = cache;
-  return cache;
+  try {
+    const { data } = await supabase
+      .from("settings")
+      .select("value")
+      .eq("key", "yeastar_token")
+      .single();
+    if (!data?.value) return null;
+    const cache = data.value as TokenCache;
+    if (Date.now() >= cache.expiry) return null;
+    memCache = cache;
+    return cache;
+  } catch {
+    return null;
+  }
 }
 
 async function writeTokenKV(cache: TokenCache): Promise<void> {
   memCache = cache;
-  await supabase
+  supabase
     .from("settings")
-    .upsert({ key: "yeastar_token", value: cache }, { onConflict: "key" });
+    .upsert({ key: "yeastar_token", value: cache }, { onConflict: "key" })
+    .then(() => {})
+    .catch(() => {});
 }
 
 function saveTokens(access_token: string, refresh_token: string): TokenCache {
