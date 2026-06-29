@@ -1,45 +1,70 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryCDR, queryRecordingsByCallers, getDateRange, formatPBXDate } from "@/lib/yeastar";
+import { queryCDRChunked, queryRecordingsByCallers, getDateRange } from "@/lib/yeastar";
 import { queryMZCalls } from "@/lib/moizvonki";
 import { readSettings, buildMzEmailMap, buildYeastarNameMap } from "@/lib/settings";
 import { UnifiedCall, UnifiedStats, EmployeeLink } from "@/types/unified";
 import { CDRRecord } from "@/types/cdr";
 import { MZCall } from "@/types/moizvonki";
 import { log, timer } from "@/lib/logger";
+import {
+  getCachedDays,
+  setCachedDay,
+  deleteCachedDay,
+  splitRangeIntoDays,
+  isoToPBXRange,
+  isoToUnixRange,
+  todayISO,
+  parsePBXDate,
+  formatPBXDate,
+  getInflight,
+  setInflight,
+  DayCache,
+} from "@/lib/cache";
 
-function pbxToUnix(pbxDate: string): number {
-  const m = pbxDate.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
-  if (!m) return 0;
-  // Yeastar vaqtni UTC+5 (O'zbekiston) da saqlaydi
-  return Math.floor(new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}+05:00`).getTime() / 1000);
+// ── Refresh timing constants ───────────────────────────────────────────────
+// Inkremental: faqat yangi yozuvlar (oxirgi yozuvdan hozirgi vaqtgacha)
+const INCREMENTAL_COOLDOWN_MS = 30 * 1000;  // 30s oralig'idan kamroq — cache qaytaradi
+// Ikki marta ketma-ket bosish → to'liq qayta yuklash
+const DOUBLE_TAP_WINDOW_MS    = 8 * 1000;   // 8s ichida 2-marta bosilsa
+let lastRefreshAt = 0;
+
+// ── Recording map in-memory cache (2 daqiqa TTL) ──────────────────────────
+let recMapCache: { map: Map<string, number>; isoDate: string; cachedAt: number } | null = null;
+const REC_TTL_MS = 2 * 60 * 1000;
+
+async function getRecordingMap(isoDate: string): Promise<Map<string, number>> {
+  if (recMapCache && recMapCache.isoDate === isoDate && Date.now() - recMapCache.cachedAt < REC_TTL_MS) {
+    return recMapCache.map;
+  }
+  const { from, to } = isoToUnixRange(isoDate);
+  // 5 soniya ichida javob kelmasa — bo'sh qaytaramiz (CDR ni bloklamamiz)
+  const map = await Promise.race([
+    queryRecordingsByCallers([], from, to),
+    new Promise<Map<string, number>>(resolve => setTimeout(() => resolve(new Map()), 5000)),
+  ]).catch(() => new Map<string, number>());
+  recMapCache = { map, isoDate, cachedAt: Date.now() };
+  return map;
 }
 
-function todayDateStr(): string {
-  const n = new Date();
-  return `${String(n.getDate()).padStart(2,"0")}/${String(n.getMonth()+1).padStart(2,"0")}/${n.getFullYear()}`;
+// ── Konversiya ─────────────────────────────────────────────────────────────
+
+function pbxToUnix(s: string): number {
+  return Math.floor(parsePBXDate(s).getTime() / 1000);
 }
-function todayStartPBX(): string {
-  const d = new Date(); d.setHours(0,0,0,0); return formatPBXDate(d);
-}
-function yesterdayEndPBX(): string {
-  const d = new Date(); d.setDate(d.getDate()-1); d.setHours(23,59,59,0); return formatPBXDate(d);
-}
-const endsToday = (end: string) => end.startsWith(todayDateStr());
-const startsToday = (start: string) => start.startsWith(todayDateStr());
 
 const TRUNK_LINES = new Set(["781223344", "781507500", "787771188", "787773322"]);
 
-function yeastarToUnified(r: CDRRecord & { rec_id: number | null }, nameMap: Map<string, EmployeeLink>): UnifiedCall {
-  const isIn = r.call_type === "Inbound";
+function yeastarToUnified(
+  r: CDRRecord & { rec_id: number | null },
+  nameMap: Map<string, EmployeeLink>
+): UnifiedCall {
+  const isIn  = r.call_type === "Inbound";
   const isOut = r.call_type === "Outbound";
-  const rawEmpName = isIn ? r.call_to_name : r.call_from_name;
+  const rawEmpName  = isIn ? r.call_to_name   : r.call_from_name;
   const emp = rawEmpName ? nameMap.get(rawEmpName.toLowerCase()) : undefined;
   const clientNumber = isIn ? (r.call_from_number ?? "") : (r.call_to_number ?? "");
-  const clientName = isIn ? (r.call_from_name ?? "") : (r.call_to_name ?? "");
-
-  // Trunk: kiruvchi = src_trunk, chiquvchi = dst_trunk
+  const clientName   = isIn ? (r.call_from_name ?? "")  : (r.call_to_name ?? "");
   const trunkCandidate = isIn ? (r.src_trunk ?? "") : (r.dst_trunk ?? "");
-  const trunkLine = TRUNK_LINES.has(trunkCandidate) ? trunkCandidate : undefined;
 
   return {
     id: `pbx_${r.uid}`,
@@ -53,7 +78,7 @@ function yeastarToUnified(r: CDRRecord & { rec_id: number | null }, nameMap: Map
     recordingUrl: r.rec_id ? `/api/recording?id=${r.rec_id}` : null,
     recId: r.rec_id ?? undefined,
     channel: "pbx",
-    trunkLine,
+    trunkLine: TRUNK_LINES.has(trunkCandidate) ? trunkCandidate : undefined,
   };
 }
 
@@ -65,9 +90,9 @@ function mzToUnified(c: MZCall, emailMap: Map<string, EmployeeLink>): UnifiedCal
     direction: c.direction === 0 ? "inbound" : "outbound",
     employeeName: emp?.displayName ?? c.user_account ?? "—",
     clientNumber: c.client_number ?? "",
-    clientName: c.client_name ?? "",
-    answered: c.answered === 1,
-    duration: c.duration ?? 0,
+    clientName:   c.client_name   ?? "",
+    answered:  c.answered === 1,
+    duration:  c.duration ?? 0,
     recordingUrl: c.recording || null,
     channel: "sim",
   };
@@ -76,15 +101,14 @@ function mzToUnified(c: MZCall, emailMap: Map<string, EmployeeLink>): UnifiedCal
 function computeStats(calls: UnifiedCall[]): UnifiedStats {
   const s: UnifiedStats = { all: calls.length, inbound: 0, answered: 0, missed: 0, outbound: 0, outbound_success: 0, outbound_failed: 0, internal: 0 };
   for (const c of calls) {
-    if (c.direction === "inbound") { s.inbound++; c.answered ? s.answered++ : s.missed++; }
+    if (c.direction === "inbound")       { s.inbound++;  c.answered ? s.answered++ : s.missed++; }
     else if (c.direction === "outbound") { s.outbound++; c.answered ? s.outbound_success++ : s.outbound_failed++; }
     else s.internal++;
   }
   return s;
 }
 
-// Bir xil uid ga ega bir nechta CDR leg bo'lishi mumkin (ring group → xodim)
-// Har bir uid dan faqat asosiy yozuvni qoldiramiz: talk_duration eng ko'p bo'lgan
+// Bir xil uid → talk_duration eng ko'p bo'lgani asosiy
 function deduplicateCDR(records: (CDRRecord & { rec_id: number | null })[]): (CDRRecord & { rec_id: number | null })[] {
   const byUid = new Map<string, (CDRRecord & { rec_id: number | null })[]>();
   for (const r of records) {
@@ -92,189 +116,229 @@ function deduplicateCDR(records: (CDRRecord & { rec_id: number | null })[]): (CD
     arr.push(r);
     byUid.set(r.uid, arr);
   }
-  const result: (CDRRecord & { rec_id: number | null })[] = [];
-  for (const legs of byUid.values()) {
-    if (legs.length === 1) { result.push(legs[0]); continue; }
-    // talk_duration eng ko'p bo'lgan leg — haqiqiy gaplashgan xodim
-    legs.sort((a, b) => (b.talk_duration ?? 0) - (a.talk_duration ?? 0));
-    result.push(legs[0]);
-  }
-  return result;
+  return [...byUid.values()].map(legs =>
+    legs.length === 1 ? legs[0] : legs.sort((a, b) => (b.talk_duration ?? 0) - (a.talk_duration ?? 0))[0]
+  );
 }
 
-async function fetchRange(start: string, end: string): Promise<(CDRRecord & { rec_id: number | null })[]> {
-  const PAGE = 500;
-  const elapsed = timer();
-  log.info("PBX", `CDR yuklanmoqda`, { start, end });
-  const [first, recMap] = await Promise.all([
-    queryCDR(start, end, 1, PAGE),
-    queryRecordingsByCallers([], pbxToUnix(start), pbxToUnix(end)),
+// ── Bitta kun uchun to'liq API so'rov ────────────────────────────────────
+
+async function fetchDayFromAPI(isoDate: string): Promise<{ pbx: CDRRecord[]; mz: MZCall[]; pbxError: string | null }> {
+  const { start, end } = isoToPBXRange(isoDate);
+  const { from, to }   = isoToUnixRange(isoDate);
+
+  const [cdrRes, mzRes] = await Promise.allSettled([
+    queryCDRChunked(start, end),
+    queryMZCalls(from, to),
   ]);
-  if (first.errcode !== 0) {
-    log.error("PBX", `CDR xatosi`, { errcode: first.errcode, errmsg: first.errmsg });
-    return [];
+
+  let pbxError: string | null = null;
+  let pbx: CDRRecord[] = [];
+
+  if (cdrRes.status === "rejected") {
+    pbxError = String(cdrRes.reason);
+  } else if (cdrRes.value.errcode !== 0) {
+    pbxError = `errcode=${cdrRes.value.errcode} ${cdrRes.value.errmsg}`;
+  } else {
+    pbx = cdrRes.value.data ?? [];
   }
-  const raw = [...(first.data ?? [])];
-  const pages = Math.ceil((first.total_number ?? raw.length) / PAGE);
-  if (pages > 1) {
-    log.info("PBX", `Yana ${pages - 1} sahifa parallel yuklanmoqda`);
-    const rest = await Promise.all(Array.from({ length: pages - 1 }, (_, i) => queryCDR(start, end, i + 2, PAGE)));
-    for (const r of rest) if (r.errcode === 0 && r.data) raw.push(...r.data);
-  }
-  const withRec = raw.map(r => ({ ...r, rec_id: recMap.get(r.uid) ?? null }));
-  const deduped = deduplicateCDR(withRec);
-  log.ok("PBX", `${raw.length} CDR → ${deduped.length} (deduplikatsiya)`, { pages, ms: elapsed() });
-  return deduped;
+
+  const mz = mzRes.status === "fulfilled" ? mzRes.value : [];
+  return { pbx, mz, pbxError };
 }
 
-async function fetchAllUnified(start: string, end: string): Promise<UnifiedCall[]> {
-  const elapsed = timer();
-  log.info("Calls", `To'liq yuklash boshlandi`, { start, end });
-  const settings = await readSettings();
-  const nameMap = buildYeastarNameMap(settings);
-  const emailMap = buildMzEmailMap(settings);
-  const [yRes, mzRes] = await Promise.allSettled([
-    fetchRange(start, end),
-    queryMZCalls(pbxToUnix(start), pbxToUnix(end)),
+// ── Inkremental yangilash: faqat oxirgi yozuvdan keyingi ma'lumotlar ──────
+// existing cache bilan merge qiladi, Supabase ni yangilaydi
+async function incrementalUpdateDay(
+  isoDate: string,
+  existing: DayCache,
+  cachedMap: Map<string, DayCache>
+): Promise<void> {
+  const { end }       = isoToPBXRange(isoDate);
+  const { from, to }  = isoToUnixRange(isoDate);
+
+  // Oxirgi yozuv vaqtini topamiz (1 daqiqa buffer bilan)
+  let sinceMs = existing.cachedAt - 5 * 60 * 1000; // standart: 5 daqiqa orqaga
+  if (existing.pbx.length > 0) {
+    const maxPbxMs = Math.max(...existing.pbx.map(r => parsePBXDate(r.time ?? "").getTime()));
+    if (maxPbxMs > 0) sinceMs = maxPbxMs - 60 * 1000; // oxirgi yozuvdan 1 daqiqa oldin
+  }
+  const since = formatPBXDate(new Date(sinceMs));
+  log.info("API /calls", `Inkremental: ${since} dan ${end} gacha`);
+
+  const [cdrRes, mzRes] = await Promise.allSettled([
+    queryCDRChunked(since, end),
+    queryMZCalls(from, to), // MZ: doim to'liq kun (kichik hajm)
   ]);
-  if (yRes.status === "rejected") log.error("Calls", "PBX yuklash muvaffaqiyatsiz", { error: String(yRes.reason) });
-  if (mzRes.status === "rejected") log.error("Calls", "MZ yuklash muvaffaqiyatsiz", { error: String(mzRes.reason) });
-  const yCalls = yRes.status === "fulfilled" ? yRes.value : [];
-  const mzCalls = mzRes.status === "fulfilled" ? mzRes.value : [];
-  const calls = [
-    ...yCalls.map(r => yeastarToUnified(r, nameMap)),
-    ...mzCalls.map(c => mzToUnified(c, emailMap)),
-  ].sort((a, b) => b.timeUnix - a.timeUnix);
-  log.ok("Calls", `Jami ${calls.length} qo'ng'iroq (PBX: ${yCalls.length}, SIM: ${mzCalls.length})`, { ms: elapsed() });
-  return calls;
-}
 
-// Split cache: tarix = doimiy, bugun = 2 daqiqa
-// v2 = trunkLine qo'shildi — eski keshni bekor qilish uchun
-const CACHE_VERSION = "v2";
-interface CacheEntry { calls: UnifiedCall[]; stats: UnifiedStats; cachedAt: number; permanent: boolean; }
-const cache = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<UnifiedCall[]>>();
-const TODAY_TTL = 2 * 60 * 1000;
-
-function getCached(key: string): CacheEntry | null {
-  const e = cache.get(key);
-  if (!e) return null;
-  if (e.permanent) return e;
-  if (Date.now() - e.cachedAt < TODAY_TTL) return e;
-  cache.delete(key); return null;
-}
-
-function setCache(key: string, calls: UnifiedCall[], permanent: boolean) {
-  cache.set(key, { calls, stats: computeStats(calls), cachedAt: Date.now(), permanent });
-  log.cache("Calls", `Saqlandi (${permanent ? "doimiy" : "2 daqiqa"}): ${calls.length} ta`);
-}
-
-async function getOrFetch(start: string, end: string, permanent: boolean): Promise<UnifiedCall[]> {
-  const key = `${CACHE_VERSION}|${start}|${end}`;
-  const hit = getCached(key);
-  if (hit) {
-    const age = hit.permanent ? "doimiy" : `${Math.round((Date.now() - hit.cachedAt) / 1000)}s oldin`;
-    log.cache("Calls", `Cache (${age}): ${hit.calls.length} ta`);
-    return hit.calls;
+  if (cdrRes.status === "rejected" || (cdrRes.status === "fulfilled" && cdrRes.value.errcode !== 0)) {
+    const err = cdrRes.status === "rejected" ? String(cdrRes.reason) : cdrRes.value.errmsg;
+    log.error("API /calls", `Inkremental CDR xato: ${err}`);
+    return; // xato bo'lsa mavjud cache o'zgarishsiz qoladi
   }
-  if (inflight.has(key)) log.info("Calls", "Yuklash davom etmoqda, kutilmoqda...");
-  let p = inflight.get(key);
-  if (!p) {
-    p = fetchAllUnified(start, end).then(calls => {
-      setCache(key, calls, permanent);
-      inflight.delete(key);
-      return calls;
-    }).catch(err => { inflight.delete(key); throw err; });
-    inflight.set(key, p);
-  }
-  return p;
+
+  const newPbx  = cdrRes.value.data ?? [];
+  const newMz   = mzRes.status === "fulfilled" ? mzRes.value : existing.mz;
+
+  // UID bo'yicha birlashtirish: yangi yozuvlar eskini ustidan yozadi
+  const byUid = new Map<string, CDRRecord>();
+  for (const r of existing.pbx) byUid.set(r.uid, r);
+  for (const r of newPbx)      byUid.set(r.uid, r);
+  const merged = [...byUid.values()];
+
+  log.info("API /calls", `Inkremental: ${existing.pbx.length} + ${newPbx.length} yangi → ${merged.length} ta`);
+  await setCachedDay(isoDate, merged, newMz);
+  cachedMap.set(isoDate, { pbx: merged, mz: newMz, cachedAt: Date.now() });
 }
+
+// ── Asosiy handler ─────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   const elapsed = timer();
   try {
     const { searchParams } = req.nextUrl;
     const customStart = searchParams.get("start");
-    const customEnd = searchParams.get("end");
+    const customEnd   = searchParams.get("end");
+    const forceRefresh = searchParams.get("refresh") === "1";
+
     const { start, end } = customStart && customEnd
       ? { start: customStart, end: customEnd }
       : getDateRange(searchParams.get("date") ?? "today");
 
-    const isOnlyToday = startsToday(start) && endsToday(end);
-    const needsSplit = endsToday(end) && !startsToday(start);
-    // Quick rejim faqat bugungi sana uchun — tarixiy sanalar uchun to'liq yuklash
-    const quick = searchParams.get("quick") === "1" && (isOnlyToday || needsSplit);
+    const today = todayISO();
+    const days  = splitRangeIntoDays(start, end);
 
-    log.info("API /calls", `So'rov: ${quick ? "quick" : "to'liq"}`, { start, end });
+    log.info("API /calls", `${days.length} kun, refresh=${forceRefresh}`, { start, end });
 
-    if (quick) {
-      const settings = await readSettings();
-      const nameMap = buildYeastarNameMap(settings);
-      const emailMap = buildMzEmailMap(settings);
+    // 1. Supabase cacheni o'qiymiz
+    const cachedMap = await getCachedDays(days);
 
-      const [firstCDR, mzCalls] = await Promise.allSettled([
-        queryCDR(start, end, 1, 500),
-        queryMZCalls(pbxToUnix(start), pbxToUnix(end)),
-      ]);
+    // 2. Qaysi kunlar yuklanishi kerak?
+    const now = Date.now();
+    const sinceLastRefresh = now - lastRefreshAt;
+    const isDoubleTap     = forceRefresh && sinceLastRefresh < DOUBLE_TAP_WINDOW_MS;
+    const incrementalOk   = forceRefresh && sinceLastRefresh >= INCREMENTAL_COOLDOWN_MS;
+    const doFullRefresh   = isDoubleTap; // ikki marta ketma-ket bosilsa — to'liq yuklash
 
-      const pbxError = firstCDR.status === "rejected"
-        ? String(firstCDR.reason)
-        : firstCDR.value.errcode !== 0 ? `errcode=${firstCDR.value.errcode} ${firstCDR.value.errmsg}` : null;
-      const yRaw = firstCDR.status === "fulfilled" && firstCDR.value.errcode === 0
-        ? (firstCDR.value.data ?? []).map(r => ({ ...r, rec_id: null as null })) : [];
-      const total = firstCDR.status === "fulfilled" ? (firstCDR.value.total_number ?? yRaw.length) : yRaw.length;
-      const hasMore = total > 500;
-      const mz = mzCalls.status === "fulfilled" ? mzCalls.value : [];
+    if (forceRefresh) {
+      if (isDoubleTap)    log.info("API /calls", "Ikki marta bosish — to'liq qayta yuklash");
+      else if (incrementalOk) log.info("API /calls", "Inkremental yangilash");
+      else                log.info("API /calls", `Cooldown (${Math.ceil((INCREMENTAL_COOLDOWN_MS - sinceLastRefresh)/1000)}s qoldi) — cache qaytarilmoqda`);
+    }
 
-      const calls = [
-        ...yRaw.map(r => yeastarToUnified(r, nameMap)),
-        ...mz.map(c => mzToUnified(c, emailMap)),
-      ].sort((a, b) => b.timeUnix - a.timeUnix);
+    const toFetch: string[] = [];
+    let doIncremental = false;
 
-      log.ok("API /calls", `Quick javob: ${calls.length} ta${hasMore ? " (yana bor)" : ""}`, { ms: elapsed() });
-
-      const cacheKey = `${CACHE_VERSION}|${start}|${end}`;
-      if (!inflight.has(cacheKey) && !getCached(cacheKey)) {
-        log.info("API /calls", "Fonda to'liq yuklash boshlanmoqda");
-        if (needsSplit) {
-          Promise.allSettled([
-            getOrFetch(start, yesterdayEndPBX(), true),
-            getOrFetch(todayStartPBX(), end, false),
-          ]).catch(() => {});
+    for (const d of days) {
+      const isToday = d === today;
+      if (isToday && (doFullRefresh || incrementalOk)) {
+        lastRefreshAt = now;
+        const cached = cachedMap.get(d);
+        if (doFullRefresh || !cached) {
+          // To'liq yuklash: cache ni o'chiramiz
+          deleteCachedDay(d).catch(() => {});
+          cachedMap.delete(d);
+          toFetch.push(d);
+        } else if (cached.pbx.length === 0) {
+          // Bo'sh PBX — stale, to'liq qayta yuklaymiz
+          deleteCachedDay(d).catch(() => {});
+          cachedMap.delete(d);
+          toFetch.push(d);
         } else {
-          const p = fetchAllUnified(start, end).then(c => {
-            setCache(cacheKey, c, !isOnlyToday && !needsSplit);
-            inflight.delete(cacheKey);
-            return c;
-          }).catch(() => { inflight.delete(cacheKey); return []; });
-          inflight.set(cacheKey, p);
+          // Inkremental: faqat yangi yozuvlarni olamiz
+          doIncremental = true;
+        }
+        continue;
+      }
+      const cached = cachedMap.get(d);
+      if (!cached) { toFetch.push(d); continue; }
+      if (isToday && cached.pbx.length === 0) {
+        deleteCachedDay(d).catch(() => {});
+        cachedMap.delete(d);
+        toFetch.push(d);
+      }
+    }
+
+    // 3a. Inkremental yangilash (faqat bugun, faqat yangi yozuvlar)
+    if (doIncremental) {
+      const cached = cachedMap.get(today);
+      if (cached) await incrementalUpdateDay(today, cached, cachedMap);
+    }
+
+    // 3b. Yo'q kunlarni API dan olamiz — inflight deduplication bilan
+    let pbxError: string | null = null;
+    if (toFetch.length > 0) {
+      log.info("API /calls", `${toFetch.length} kun API dan yuklanmoqda`);
+
+      // Har bir kun uchun: boshqa so'rov yuklab tursa — unga qo'shilamiz (dublikat API chaqiruv yo'q)
+      const CONCURRENCY = 3; // Yeastar parallel chaqiruvlarni cheklaydi
+      for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
+        const chunk = toFetch.slice(i, i + CONCURRENCY);
+        const promises = chunk.map(isoDate => {
+          const existing = getInflight(isoDate);
+          if (existing) return existing;
+
+          const p: Promise<DayCache> = fetchDayFromAPI(isoDate).then(({ pbx, mz, pbxError: err }) => {
+            if (err) {
+              log.error("API /calls", `PBX xato: ${isoDate}`, { err });
+              // PBX xato bo'lsa Supabase ga saqlamaymiz — keyingi so'rov qayta urinadi
+              return { pbx, mz, cachedAt: Date.now() } as DayCache;
+            }
+            const entry: DayCache = { pbx, mz, cachedAt: Date.now() };
+            setCachedDay(isoDate, pbx, mz).catch(e => log.error("cache", `Saqlanmadi: ${isoDate}`, { e: String(e) }));
+            return entry;
+          });
+          setInflight(isoDate, p);
+          return p;
+        });
+
+        const results = await Promise.allSettled(promises);
+        for (let j = 0; j < chunk.length; j++) {
+          const isoDate = chunk[j];
+          const r = results[j];
+          if (r.status === "fulfilled") {
+            cachedMap.set(isoDate, r.value);
+          } else {
+            pbxError = String(r.reason);
+            log.error("API /calls", `Kun yuklanmadi: ${isoDate}`, { err: pbxError });
+          }
         }
       }
-
-      return NextResponse.json({ calls, stats: computeStats(calls), has_more: hasMore, pbxError });
     }
 
-    let calls: UnifiedCall[];
-    if (needsSplit) {
-      log.info("API /calls", "Split cache: tarix + bugun");
-      const [hist, today] = await Promise.all([
-        getOrFetch(start, yesterdayEndPBX(), true),
-        getOrFetch(todayStartPBX(), end, false),
-      ]);
-      calls = [...hist, ...today].sort((a, b) => b.timeUnix - a.timeUnix);
-    } else {
-      calls = await getOrFetch(start, end, !isOnlyToday);
+    // 4. Yozuvlarni yig'ib unified formatga o'tkazamiz
+    const settings = await readSettings();
+    const nameMap  = buildYeastarNameMap(settings);
+    const emailMap = buildMzEmailMap(settings);
+
+    // Recording map — faqat yangi yuklamada, cache dan kelganda o'tkazib yuboramiz
+    const needsRecording = days.includes(today) && toFetch.length > 0;
+    const recMap = needsRecording
+      ? await getRecordingMap(today)
+      : (recMapCache?.isoDate === today ? recMapCache.map : new Map<string, number>());
+
+    const allPBX: (CDRRecord & { rec_id: number | null })[] = [];
+    const allMZ:  MZCall[] = [];
+
+    for (const d of days) {
+      const entry = cachedMap.get(d);
+      if (!entry) continue;
+      for (const r of entry.pbx) allPBX.push({ ...r, rec_id: recMap.get(r.uid) ?? null });
+      allMZ.push(...entry.mz);
     }
 
-    log.ok("API /calls", `To'liq javob: ${calls.length} ta`, { ms: elapsed() });
-    return NextResponse.json({ calls, stats: computeStats(calls), has_more: false });
+    const deduped = deduplicateCDR(allPBX);
+    const calls = [
+      ...deduped.map(r => yeastarToUnified(r, nameMap)),
+      ...allMZ.map(c => mzToUnified(c, emailMap)),
+    ].sort((a, b) => b.timeUnix - a.timeUnix);
+
+    log.ok("API /calls", `${calls.length} ta (PBX:${deduped.length} SIM:${allMZ.length})`, { ms: elapsed() });
+    return NextResponse.json({ calls, stats: computeStats(calls), pbxError });
+
   } catch (err: unknown) {
-    log.error("API /calls", `Xato`, { error: err instanceof Error ? err.message : String(err), ms: elapsed() });
-    return NextResponse.json({ error: err instanceof Error ? err.message : "Xato" }, { status: 500 });
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("API /calls", message, { ms: elapsed() });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-}
-
-export function formatPBXDateFromDate(d: Date): string {
-  return formatPBXDate(d);
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryCDR, queryRecordingsByCallers, getDateRange, formatPBXDate } from "@/lib/yeastar";
+import { queryCDRChunked, queryRecordingsByCallers, getDateRange, formatPBXDate } from "@/lib/yeastar";
 import { CDRRecord, CDRStats } from "@/types/cdr";
 
 interface CacheEntry {
@@ -87,27 +87,12 @@ function yesterdayEndPBX(): string {
 }
 
 async function fetchRange(start: string, end: string): Promise<CDRRecord[]> {
-  const PAGE_SIZE = 500;
-  const [first, recMap] = await Promise.all([
-    queryCDR(start, end, 1, PAGE_SIZE),
+  const [cdrResp, recMap] = await Promise.all([
+    queryCDRChunked(start, end),
     queryRecordingsByCallers([], pbxToUnix(start), pbxToUnix(end)),
   ]);
-  if (first.errcode !== 0) throw new Error(first.errmsg || "CDR xatosi");
-
-  const rawRecords = [...(first.data ?? [])];
-  const total = first.total_number ?? rawRecords.length;
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-
-  if (totalPages > 1) {
-    const rest = await Promise.all(
-      Array.from({ length: totalPages - 1 }, (_, i) => queryCDR(start, end, i + 2, PAGE_SIZE))
-    );
-    for (const resp of rest) {
-      if (resp.errcode === 0 && resp.data) rawRecords.push(...resp.data);
-    }
-  }
-
-  return rawRecords.map(r => ({ ...r, rec_id: recMap.get(r.uid) ?? null }));
+  if (cdrResp.errcode !== 0) throw new Error(cdrResp.errmsg || "CDR xatosi");
+  return (cdrResp.data ?? []).map(r => ({ ...r, rec_id: recMap.get(r.uid) ?? null }));
 }
 
 function buildEntry(records: CDRRecord[], permanent: boolean): CacheEntry {
@@ -190,7 +175,9 @@ export async function GET(req: NextRequest) {
     // quick=1: birinchi sahifani tez qaytaramiz, fonda to'liq yuklaymiz
     if (quick) {
       const PAGE_SIZE = 500;
-      const first = await queryCDR(start, end, 1, PAGE_SIZE);
+      // quick rejimda faqat bitta sahifa (tez javob) — chunk qilmaymiz
+      const { queryCDR: _qCDR } = await import("@/lib/yeastar");
+      const first = await _qCDR(start, end, 1, PAGE_SIZE);
       if (first.errcode !== 0) return NextResponse.json({ error: first.errmsg }, { status: 502 });
 
       const rawRecords = first.data ?? [];

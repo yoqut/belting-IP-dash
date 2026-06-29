@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryCDR, getDateRange } from "@/lib/yeastar";
+import { queryCDRChunked, getDateRange } from "@/lib/yeastar";
 import { CDRRecord } from "@/types/cdr";
 
 export interface DayBucket {
@@ -38,21 +38,9 @@ function parseDate(pbx: string): string {
 }
 
 async function fetchAllRecords(start: string, end: string): Promise<CDRRecord[]> {
-  const PAGE_SIZE = 500;
-  const first = await queryCDR(start, end, 1, PAGE_SIZE);
-  if (first.errcode !== 0) throw new Error(first.errmsg || "CDR xatosi");
-  const raw = [...(first.data ?? [])];
-  const total = first.total_number ?? raw.length;
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  if (totalPages > 1) {
-    const rest = await Promise.all(
-      Array.from({ length: totalPages - 1 }, (_, i) => queryCDR(start, end, i + 2, PAGE_SIZE))
-    );
-    for (const resp of rest) {
-      if (resp.errcode === 0 && resp.data) raw.push(...resp.data);
-    }
-  }
-  return raw;
+  const resp = await queryCDRChunked(start, end);
+  if (resp.errcode !== 0) throw new Error(resp.errmsg || "CDR xatosi");
+  return resp.data ?? [];
 }
 
 export async function GET(req: NextRequest) {
