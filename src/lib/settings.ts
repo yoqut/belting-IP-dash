@@ -1,23 +1,27 @@
-import fs from "fs";
-import path from "path";
+import { createClient } from "@supabase/supabase-js";
 import { AppSettings, EmployeeLink } from "@/types/unified";
 
-const SETTINGS_FILE = path.join(process.cwd(), "data", "settings.json");
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 const DEFAULT: AppSettings = { employees: [] };
 
-export function readSettings(): AppSettings {
-  try {
-    return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) as AppSettings;
-  } catch {
-    return DEFAULT;
-  }
+export async function readSettings(): Promise<AppSettings> {
+  const { data, error } = await supabase
+    .from("settings")
+    .select("value")
+    .eq("key", "app")
+    .single();
+  if (error || !data) return DEFAULT;
+  return data.value as AppSettings;
 }
 
-export function writeSettings(s: AppSettings): void {
-  const dir = path.dirname(SETTINGS_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2), "utf-8");
+export async function writeSettings(s: AppSettings): Promise<void> {
+  await supabase
+    .from("settings")
+    .upsert({ key: "app", value: s }, { onConflict: "key" });
 }
 
 export function buildMzEmailMap(s: AppSettings): Map<string, EmployeeLink> {

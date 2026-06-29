@@ -4,6 +4,7 @@
 /node_modules
 /.pnp
 */npm-cache
+/npm-cache
 /app-src
 
 .pnp.*

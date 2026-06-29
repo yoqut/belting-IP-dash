@@ -129,7 +129,7 @@ async function fetchRange(start: string, end: string): Promise<(CDRRecord & { re
 async function fetchAllUnified(start: string, end: string): Promise<UnifiedCall[]> {
   const elapsed = timer();
   log.info("Calls", `To'liq yuklash boshlandi`, { start, end });
-  const settings = readSettings();
+  const settings = await readSettings();
   const nameMap = buildYeastarNameMap(settings);
   const emailMap = buildMzEmailMap(settings);
   const [yRes, mzRes] = await Promise.allSettled([
@@ -208,7 +208,7 @@ export async function GET(req: NextRequest) {
     log.info("API /calls", `So'rov: ${quick ? "quick" : "to'liq"}`, { start, end });
 
     if (quick) {
-      const settings = readSettings();
+      const settings = await readSettings();
       const nameMap = buildYeastarNameMap(settings);
       const emailMap = buildMzEmailMap(settings);
 

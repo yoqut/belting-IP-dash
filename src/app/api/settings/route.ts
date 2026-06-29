@@ -54,7 +54,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = (await req.json()) as AppSettings;
-  writeSettings(body);
+  await writeSettings(body);
   log.ok("API /settings", `Saqlandi: ${body.employees?.length ?? 0} xodim`);
   return NextResponse.json({ ok: true });
 }
