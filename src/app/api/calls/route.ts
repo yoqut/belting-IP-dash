@@ -217,6 +217,9 @@ export async function GET(req: NextRequest) {
         queryMZCalls(pbxToUnix(start), pbxToUnix(end)),
       ]);
 
+      const pbxError = firstCDR.status === "rejected"
+        ? String(firstCDR.reason)
+        : firstCDR.value.errcode !== 0 ? `errcode=${firstCDR.value.errcode} ${firstCDR.value.errmsg}` : null;
       const yRaw = firstCDR.status === "fulfilled" && firstCDR.value.errcode === 0
         ? (firstCDR.value.data ?? []).map(r => ({ ...r, rec_id: null as null })) : [];
       const total = firstCDR.status === "fulfilled" ? (firstCDR.value.total_number ?? yRaw.length) : yRaw.length;
@@ -248,7 +251,7 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      return NextResponse.json({ calls, stats: computeStats(calls), has_more: hasMore });
+      return NextResponse.json({ calls, stats: computeStats(calls), has_more: hasMore, pbxError });
     }
 
     let calls: UnifiedCall[];
