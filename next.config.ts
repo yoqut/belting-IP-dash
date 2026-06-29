@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  allowedDevOrigins: [
+    "thoroughly-mandate-tribal-bizrate.trycloudflare.com",
+  ],
 };
 
 export default nextConfig;

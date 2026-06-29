@@ -3,6 +3,9 @@
 # dependencies
 /node_modules
 /.pnp
+*/npm-cache
+/app-src
+
 .pnp.*
 .yarn/*
 !.yarn/patches
@@ -38,4 +41,4 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
+.yeastar-token.json

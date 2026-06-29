@@ -1,0 +1,49 @@
+{
+  "employees": [
+    {
+      "displayName": "Sherzod",
+      "mzEmail": "s.ramazanov@beltingrezina.com",
+      "yeastarExtName": "Sherzod Ramazanov"
+    },
+    {
+      "displayName": "Behzod",
+      "mzEmail": "sales1@beltingrezina.com",
+      "yeastarExtName": "Bexzod ROP O'tbosarov"
+    },
+    {
+      "displayName": "Islom",
+      "mzEmail": "sales2@beltingrezina.com",
+      "yeastarExtName": "Islom Tilloyev"
+    },
+    {
+      "displayName": "Yusufjon",
+      "mzEmail": "sales3@beltingrezina.com",
+      "yeastarExtName": "Yusufjon Raufov"
+    },
+    {
+      "displayName": "Manager 4",
+      "mzEmail": "sales4@beltingrezina.com",
+      "yeastarExtName": "Begzod Maxmutov"
+    },
+    {
+      "displayName": "Abror",
+      "mzEmail": "sales6@belting.uz",
+      "yeastarExtName": "Abror Amanov"
+    },
+    {
+      "displayName": "Botirovich",
+      "mzEmail": "b.urazov@belting.uz",
+      "yeastarExtName": "Bekzod Urazov"
+    },
+    {
+      "displayName": "Shahzod Marketing",
+      "mzEmail": "marketing@belting.uz",
+      "yeastarExtName": "Marketing"
+    },
+    {
+      "displayName": "",
+      "mzEmail": "",
+      "yeastarExtName": "Holmurod"
+    }
+  ]
+}
