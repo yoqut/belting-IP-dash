@@ -68,7 +68,7 @@ function computeStats(records: CDRRecord[]): CDRStats {
 function pbxToUnix(pbxDate: string): number {
   const m = pbxDate.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
   if (!m) return 0;
-  return Math.floor(new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}`).getTime() / 1000);
+  return Math.floor(new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}+05:00`).getTime() / 1000);
 }
 
 // Bugunning boshlanishi: "DD/MM/YYYY 00:00:00"

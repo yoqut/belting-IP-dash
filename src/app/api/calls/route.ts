@@ -10,7 +10,8 @@ import { log, timer } from "@/lib/logger";
 function pbxToUnix(pbxDate: string): number {
   const m = pbxDate.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/);
   if (!m) return 0;
-  return Math.floor(new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}`).getTime() / 1000);
+  // Yeastar vaqtni UTC+5 (O'zbekiston) da saqlaydi
+  return Math.floor(new Date(`${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:${m[6]}+05:00`).getTime() / 1000);
 }
 
 function todayDateStr(): string {
