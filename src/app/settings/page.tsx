@@ -25,7 +25,6 @@ export default function SettingsPage() {
       setEmployees((data.settings as AppSettings).employees ?? []);
       setMzList(data.mzEmployees ?? []);
       setYList(data.yeastarEmployees ?? []);
-      if (data.yeastarError) setError(`PBX xodimlar yuklanmadi: ${data.yeastarError}`);
     } catch {
       setError("Sozlamalar yuklanmadi");
     } finally {
