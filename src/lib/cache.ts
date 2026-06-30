@@ -42,16 +42,22 @@ export function todayISO(): string {
 
 // PBX sana oralig'ini kunlik ISO massivga bo'lish
 export function splitRangeIntoDays(startPBX: string, endPBX: string): string[] {
-  const start = parsePBXDate(startPBX);
-  const end = parsePBXDate(endPBX);
+  const startISO = toISODate(parsePBXDate(startPBX));
+  const endISO   = toISODate(parsePBXDate(endPBX));
   const days: string[] = [];
-  const cursor = new Date(start);
-  cursor.setHours(0, 0, 0, 0);
-  while (cursor <= end) {
-    days.push(toISODate(cursor));
-    cursor.setDate(cursor.getDate() + 1);
+  // Cursor ni UTC+5 bo'yicha kunning boshiga qo'yamiz (local time ishlatmaymiz)
+  let [y, mo, d] = startISO.split("-").map(Number);
+  while (true) {
+    const isoDate = `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    days.push(isoDate);
+    if (isoDate >= endISO) break;
+    // Keyingi kunga o'tamiz
+    const next = new Date(Date.UTC(y, mo - 1, d + 1));
+    y  = next.getUTCFullYear();
+    mo = next.getUTCMonth() + 1;
+    d  = next.getUTCDate();
   }
-  return [...new Set(days)]; // takrorlanmasligini ta'minlaymiz
+  return [...new Set(days)];
 }
 
 // "YYYY-MM-DD" → PBX format (DD/MM/YYYY HH:mm:ss)

@@ -61,13 +61,16 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState("");
   const [selectedNumber, setSelectedNumber] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const [isRefreshClick, setIsRefreshClick] = useState(false);
+
+  const fetchData = useCallback(async (refresh = false) => {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
       start: formatPBX(dateRange.start),
       end: formatPBX(dateRange.end),
     });
+    if (refresh) params.set("refresh", "1");
     try {
       const res = await fetch(`/api/employees?${params}`);
       const data = await res.json();
@@ -78,10 +81,11 @@ export default function EmployeesPage() {
       setError(e instanceof Error ? e.message : "Noma'lum xato");
     } finally {
       setLoading(false);
+      setIsRefreshClick(false);
     }
   }, [dateRange]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchData(false); }, [fetchData]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -186,7 +190,7 @@ export default function EmployeesPage() {
             <span className="text-gray-400 mr-3">{lastUpdated}</span>
           )}
           <DateRangePicker value={dateRange} onChange={setDateRange} />
-          <button onClick={fetchData} disabled={loading} className="ml-2 p-1.5 border border-gray-200 rounded text-gray-400 hover:bg-gray-50 disabled:opacity-40 transition-colors">
+          <button onClick={() => { setIsRefreshClick(true); fetchData(true); }} disabled={loading} className="ml-2 p-1.5 border border-gray-200 rounded text-gray-400 hover:bg-gray-50 disabled:opacity-40 transition-colors">
             <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
             </svg>

@@ -15,18 +15,11 @@ import {
   isoToUnixRange,
   todayISO,
   parsePBXDate,
-  formatPBXDate,
   getInflight,
   setInflight,
   DayCache,
 } from "@/lib/cache";
-
-// ── Refresh timing constants ───────────────────────────────────────────────
-// Inkremental: faqat yangi yozuvlar (oxirgi yozuvdan hozirgi vaqtgacha)
-const INCREMENTAL_COOLDOWN_MS = 30 * 1000;  // 30s oralig'idan kamroq — cache qaytaradi
-// Ikki marta ketma-ket bosish → to'liq qayta yuklash
-const DOUBLE_TAP_WINDOW_MS    = 8 * 1000;   // 8s ichida 2-marta bosilsa
-let lastRefreshAt = 0;
+import { handleRefresh } from "@/lib/day-refresh";
 
 // ── Recording map in-memory cache (2 daqiqa TTL) ──────────────────────────
 let recMapCache: { map: Map<string, number>; isoDate: string; cachedAt: number } | null = null;
@@ -121,7 +114,7 @@ function deduplicateCDR(records: (CDRRecord & { rec_id: number | null })[]): (CD
   );
 }
 
-// ── Bitta kun uchun to'liq API so'rov ────────────────────────────────────
+// ── Bitta kun uchun to'liq API so'rov (xato sifatida pbxError bilan) ────
 
 async function fetchDayFromAPI(isoDate: string): Promise<{ pbx: CDRRecord[]; mz: MZCall[]; pbxError: string | null }> {
   const { start, end } = isoToPBXRange(isoDate);
@@ -147,50 +140,6 @@ async function fetchDayFromAPI(isoDate: string): Promise<{ pbx: CDRRecord[]; mz:
   return { pbx, mz, pbxError };
 }
 
-// ── Inkremental yangilash: faqat oxirgi yozuvdan keyingi ma'lumotlar ──────
-// existing cache bilan merge qiladi, Supabase ni yangilaydi
-async function incrementalUpdateDay(
-  isoDate: string,
-  existing: DayCache,
-  cachedMap: Map<string, DayCache>
-): Promise<void> {
-  const { end }       = isoToPBXRange(isoDate);
-  const { from, to }  = isoToUnixRange(isoDate);
-
-  // Oxirgi yozuv vaqtini topamiz (1 daqiqa buffer bilan)
-  let sinceMs = existing.cachedAt - 5 * 60 * 1000; // standart: 5 daqiqa orqaga
-  if (existing.pbx.length > 0) {
-    const maxPbxMs = Math.max(...existing.pbx.map(r => parsePBXDate(r.time ?? "").getTime()));
-    if (maxPbxMs > 0) sinceMs = maxPbxMs - 60 * 1000; // oxirgi yozuvdan 1 daqiqa oldin
-  }
-  const since = formatPBXDate(new Date(sinceMs));
-  log.info("API /calls", `Inkremental: ${since} dan ${end} gacha`);
-
-  const [cdrRes, mzRes] = await Promise.allSettled([
-    queryCDRChunked(since, end),
-    queryMZCalls(from, to), // MZ: doim to'liq kun (kichik hajm)
-  ]);
-
-  if (cdrRes.status === "rejected" || (cdrRes.status === "fulfilled" && cdrRes.value.errcode !== 0)) {
-    const err = cdrRes.status === "rejected" ? String(cdrRes.reason) : cdrRes.value.errmsg;
-    log.error("API /calls", `Inkremental CDR xato: ${err}`);
-    return; // xato bo'lsa mavjud cache o'zgarishsiz qoladi
-  }
-
-  const newPbx  = cdrRes.value.data ?? [];
-  const newMz   = mzRes.status === "fulfilled" ? mzRes.value : existing.mz;
-
-  // UID bo'yicha birlashtirish: yangi yozuvlar eskini ustidan yozadi
-  const byUid = new Map<string, CDRRecord>();
-  for (const r of existing.pbx) byUid.set(r.uid, r);
-  for (const r of newPbx)      byUid.set(r.uid, r);
-  const merged = [...byUid.values()];
-
-  log.info("API /calls", `Inkremental: ${existing.pbx.length} + ${newPbx.length} yangi → ${merged.length} ta`);
-  await setCachedDay(isoDate, merged, newMz);
-  cachedMap.set(isoDate, { pbx: merged, mz: newMz, cachedAt: Date.now() });
-}
-
 // ── Asosiy handler ─────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
@@ -213,56 +162,16 @@ export async function GET(req: NextRequest) {
     // 1. Supabase cacheni o'qiymiz
     const cachedMap = await getCachedDays(days);
 
-    // 2. Qaysi kunlar yuklanishi kerak?
-    const now = Date.now();
-    const sinceLastRefresh = now - lastRefreshAt;
-    const isDoubleTap     = forceRefresh && sinceLastRefresh < DOUBLE_TAP_WINDOW_MS;
-    const incrementalOk   = forceRefresh && sinceLastRefresh >= INCREMENTAL_COOLDOWN_MS;
-    const doFullRefresh   = isDoubleTap; // ikki marta ketma-ket bosilsa — to'liq yuklash
-
-    if (forceRefresh) {
-      if (isDoubleTap)    log.info("API /calls", "Ikki marta bosish — to'liq qayta yuklash");
-      else if (incrementalOk) log.info("API /calls", "Inkremental yangilash");
-      else                log.info("API /calls", `Cooldown (${Math.ceil((INCREMENTAL_COOLDOWN_MS - sinceLastRefresh)/1000)}s qoldi) — cache qaytarilmoqda`);
+    // 2. Bugun uchun refresh (handleRefresh: full / incremental / cooldown)
+    if (forceRefresh && days.includes(today)) {
+      await handleRefresh(today, cachedMap);
     }
 
+    // 3. Cache yo'q kunlarni aniqlash
     const toFetch: string[] = [];
-    let doIncremental = false;
-
     for (const d of days) {
-      const isToday = d === today;
-      if (isToday && (doFullRefresh || incrementalOk)) {
-        lastRefreshAt = now;
-        const cached = cachedMap.get(d);
-        if (doFullRefresh || !cached) {
-          // To'liq yuklash: cache ni o'chiramiz
-          deleteCachedDay(d).catch(() => {});
-          cachedMap.delete(d);
-          toFetch.push(d);
-        } else if (cached.pbx.length === 0) {
-          // Bo'sh PBX — stale, to'liq qayta yuklaymiz
-          deleteCachedDay(d).catch(() => {});
-          cachedMap.delete(d);
-          toFetch.push(d);
-        } else {
-          // Inkremental: faqat yangi yozuvlarni olamiz
-          doIncremental = true;
-        }
-        continue;
-      }
-      const cached = cachedMap.get(d);
-      if (!cached) { toFetch.push(d); continue; }
-      if (isToday && cached.pbx.length === 0) {
-        deleteCachedDay(d).catch(() => {});
-        cachedMap.delete(d);
-        toFetch.push(d);
-      }
-    }
-
-    // 3a. Inkremental yangilash (faqat bugun, faqat yangi yozuvlar)
-    if (doIncremental) {
-      const cached = cachedMap.get(today);
-      if (cached) await incrementalUpdateDay(today, cached, cachedMap);
+      if (d === today && cachedMap.has(d)) continue; // handleRefresh hal qildi yoki cache bor
+      if (!cachedMap.has(d)) { toFetch.push(d); continue; }
     }
 
     // 3b. Yo'q kunlarni API dan olamiz — inflight deduplication bilan

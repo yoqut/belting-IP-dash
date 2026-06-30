@@ -1,19 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryCDRChunked, getDateRange } from "@/lib/yeastar";
-import { queryMZCalls } from "@/lib/moizvonki";
+import { getDateRange } from "@/lib/yeastar";
 import { CDRRecord } from "@/types/cdr";
-import { MZCall } from "@/types/moizvonki";
 import {
   getCachedDays,
-  setCachedDay,
   splitRangeIntoDays,
-  isoToPBXRange,
-  isoToUnixRange,
   todayISO,
-  getInflight,
-  setInflight,
   DayCache,
 } from "@/lib/cache";
+import { handleRefresh, fetchDayFull } from "@/lib/day-refresh";
 
 export interface EmployeeStat {
   number: string;
@@ -70,29 +64,6 @@ function buildStats(records: CDRRecord[]): EmployeeStat[] {
   return Array.from(map.values()).sort((a, b) => b.total - a.total);
 }
 
-async function fetchDayForEmployees(isoDate: string): Promise<DayCache> {
-  const existing = getInflight(isoDate);
-  if (existing) return existing;
-
-  const { start, end } = isoToPBXRange(isoDate);
-  const { from, to }   = isoToUnixRange(isoDate);
-
-  const p: Promise<DayCache> = Promise.allSettled([
-    queryCDRChunked(start, end),
-    queryMZCalls(from, to),
-  ]).then(([cdrRes, mzRes]) => {
-    const cdrOk = cdrRes.status === "fulfilled" && cdrRes.value.errcode === 0;
-    const pbx = cdrOk ? (cdrRes.value.data ?? []) as CDRRecord[] : [] as CDRRecord[];
-    const mz  = mzRes.status === "fulfilled" ? mzRes.value as MZCall[] : [] as MZCall[];
-    const entry: DayCache = { pbx, mz, cachedAt: Date.now() };
-    // CDR xato bo'lsa Supabase ga saqlamaymiz — keyingi so'rovda qayta urinadi
-    if (cdrOk) setCachedDay(isoDate, pbx, mz).catch(() => {});
-    return entry;
-  });
-
-  setInflight(isoDate, p);
-  return p;
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -103,23 +74,34 @@ export async function GET(req: NextRequest) {
       ? { start: customStart, end: customEnd }
       : getDateRange(searchParams.get("date") ?? "today");
 
+    const forceRefresh = searchParams.get("refresh") === "1";
     const today = todayISO();
     const days  = splitRangeIntoDays(start, end);
     const cachedMap = await getCachedDays(days);
 
-    // Yo'q kunlarni yuklaymiz (inflight orqali calls route bilan deduplication)
-    const toFetch = days.filter(d => !cachedMap.has(d));
+    // Bugun uchun refresh (calls route bilan umumiy cache — bir xil inflight)
+    if (forceRefresh && days.includes(today)) {
+      await handleRefresh(today, cachedMap);
+    }
+
+    // Yo'q tarixiy kunlarni yuklaymiz
+    const toFetch = days.filter(d => d !== today && !cachedMap.has(d));
     if (toFetch.length > 0) {
       const CONCURRENCY = 3;
       for (let i = 0; i < toFetch.length; i += CONCURRENCY) {
         const chunk = toFetch.slice(i, i + CONCURRENCY);
-        const results = await Promise.allSettled(chunk.map(d => fetchDayForEmployees(d)));
+        const results = await Promise.allSettled(chunk.map(d => fetchDayFull(d)));
         for (let j = 0; j < chunk.length; j++) {
           if (results[j].status === "fulfilled") {
             cachedMap.set(chunk[j], (results[j] as PromiseFulfilledResult<DayCache>).value);
           }
         }
       }
+    }
+
+    // Bugun cache da yo'q bo'lsa
+    if (days.includes(today) && !cachedMap.has(today)) {
+      try { cachedMap.set(today, await fetchDayFull(today)); } catch { /* xatolik bo'lsa bo'sh */ }
     }
 
     const allPBX: CDRRecord[] = [];
