@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryCDRChunked, getDateRange } from "@/lib/yeastar";
+import { getDateRange } from "@/lib/yeastar";
 import { CDRRecord } from "@/types/cdr";
+import { getCachedDays, splitRangeIntoDays, todayISO, DayCache } from "@/lib/cache";
+import { fetchDayFull } from "@/lib/day-refresh";
 
 export interface DayBucket {
   date: string; // "DD/MM/YYYY"
@@ -38,9 +40,34 @@ function parseDate(pbx: string): string {
 }
 
 async function fetchAllRecords(start: string, end: string): Promise<CDRRecord[]> {
-  const resp = await queryCDRChunked(start, end);
-  if (resp.errcode !== 0) throw new Error(resp.errmsg || "CDR xatosi");
-  return resp.data ?? [];
+  const days = splitRangeIntoDays(start, end);
+  const today = todayISO();
+  const cachedMap = await getCachedDays(days);
+
+  // Keshda yo'q kunlarni yuklaymiz
+  const missing = days.filter(d => !cachedMap.has(d));
+  const CONCURRENCY = 3;
+  for (let i = 0; i < missing.length; i += CONCURRENCY) {
+    const chunk = missing.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(chunk.map(d => fetchDayFull(d)));
+    for (let j = 0; j < chunk.length; j++) {
+      if (results[j].status === "fulfilled") {
+        cachedMap.set(chunk[j], (results[j] as PromiseFulfilledResult<DayCache>).value);
+      }
+    }
+  }
+
+  // Bugun keshda yo'q bo'lsa — PBX dan olamiz, xato bo'lsa bo'sh
+  if (days.includes(today) && !cachedMap.has(today)) {
+    try { cachedMap.set(today, await fetchDayFull(today)); } catch { /* ignore */ }
+  }
+
+  const allPBX: CDRRecord[] = [];
+  for (const d of days) {
+    const entry = cachedMap.get(d);
+    if (entry) allPBX.push(...entry.pbx);
+  }
+  return allPBX;
 }
 
 export async function GET(req: NextRequest) {

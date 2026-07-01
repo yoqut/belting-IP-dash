@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
 
     // Bugun uchun refresh (calls route bilan umumiy cache — bir xil inflight)
     if (forceRefresh && days.includes(today)) {
-      await handleRefresh(today, cachedMap);
+      await handleRefresh(today, cachedMap).catch(() => {});
     }
 
     // Yo'q tarixiy kunlarni yuklaymiz
