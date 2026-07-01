@@ -90,7 +90,13 @@ async function fetchNewToken(): Promise<TokenCache> {
     headers: COMMON_HEADERS,
     body: JSON.stringify({ username: CLIENT_ID, password: CLIENT_SECRET }),
   });
-  const data = await res.json();
+  log.info("yeastar", `get_token HTTP status: ${res.status} ${res.statusText}`);
+  const text = await res.text();
+  if (!res.ok || text.trimStart().startsWith("<")) {
+    log.error("yeastar", `get_token xato javob (${res.status})`, { body: text.slice(0, 300) });
+    throw new Error(`PBX token HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const data = JSON.parse(text);
   log.info("yeastar", `get_token javob: errcode=${data.errcode}`, { errmsg: data.errmsg });
   if (data.errcode !== 0) throw new Error(data.errmsg || "Token olishda xato");
   log.ok("yeastar", "Yangi token olindi");
@@ -104,7 +110,13 @@ async function doRefresh(refreshToken: string): Promise<TokenCache | null> {
     headers: COMMON_HEADERS,
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
-  const data = await res.json();
+  log.info("yeastar", `refresh_token HTTP status: ${res.status}`);
+  const text = await res.text();
+  if (!res.ok || text.trimStart().startsWith("<")) {
+    log.error("yeastar", `refresh_token xato javob (${res.status})`, { body: text.slice(0, 300) });
+    return null;
+  }
+  const data = JSON.parse(text);
   log.info("yeastar", `refresh_token javob: errcode=${data.errcode}`, { errmsg: data.errmsg });
   if (data.errcode !== 0) return null;
   log.ok("yeastar", "Token yangilandi (refresh)");
