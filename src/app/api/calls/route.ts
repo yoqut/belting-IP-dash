@@ -164,7 +164,9 @@ export async function GET(req: NextRequest) {
 
     // 2. Bugun uchun refresh (handleRefresh: full / incremental / cooldown)
     if (forceRefresh && days.includes(today)) {
-      await handleRefresh(today, cachedMap);
+      await handleRefresh(today, cachedMap).catch((e: unknown) => {
+        log.error("API /calls", `handleRefresh xato: ${String(e)}`);
+      });
     }
 
     // 3. Cache yo'q kunlarni aniqlash

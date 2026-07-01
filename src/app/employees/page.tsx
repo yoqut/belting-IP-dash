@@ -27,25 +27,61 @@ function fmtDur(sec: number): string {
   return `${s}s`;
 }
 
-function fmtAvg(totalSec: number, count: number): string {
-  if (!count) return "—";
-  return fmtDur(Math.round(totalSec / count));
-}
-
 function pct(a: number, b: number): string {
-  if (!b) return "—";
+  if (!b) return "";
   return `${Math.round((a / b) * 100)}%`;
 }
 
-type SortKey = keyof EmployeeStat | "missed_rate" | "avg_talk";
+type SortKey = "name" | "total" | "outbound" | "outbound_success" | "outbound_failed" | "inbound" | "inbound_answered" | "inbound_missed" | "total_talk_sec";
 type SortDir = "asc" | "desc";
 
-function KpiCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color: string }) {
+function SummaryCard({
+  label,
+  total,
+  success,
+  successLabel,
+  fail,
+  failLabel,
+  colorTotal,
+}: {
+  label: string;
+  total: number;
+  success: number;
+  successLabel: string;
+  fail: number;
+  failLabel: string;
+  colorTotal: string;
+}) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4 flex flex-col gap-1">
-      <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</span>
-      <span className={`text-2xl font-bold ${color}`}>{value}</span>
-      {sub && <span className="text-xs text-gray-400">{sub}</span>}
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm px-6 py-5 flex flex-col gap-3">
+      <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">{label}</span>
+      <span className={`text-4xl font-bold ${colorTotal}`}>{total}</span>
+      <div className="flex gap-4">
+        <div className="flex flex-col">
+          <span className="text-xs text-gray-400">{successLabel}</span>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold text-green-600">{success}</span>
+            <span className="text-xs text-green-500">{pct(success, total)}</span>
+          </div>
+        </div>
+        <div className="w-px bg-gray-100" />
+        <div className="flex flex-col">
+          <span className="text-xs text-gray-400">{failLabel}</span>
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-bold text-red-500">{fail}</span>
+            <span className="text-xs text-red-400">{pct(fail, total)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TotalCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm px-6 py-5 flex flex-col gap-3">
+      <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">{label}</span>
+      <span className="text-4xl font-bold text-gray-800">{value}</span>
     </div>
   );
 }
@@ -60,8 +96,6 @@ export default function EmployeesPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [search, setSearch] = useState("");
   const [selectedNumber, setSelectedNumber] = useState<string | null>(null);
-
-  const [isRefreshClick, setIsRefreshClick] = useState(false);
 
   const fetchData = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -81,7 +115,6 @@ export default function EmployeesPage() {
       setError(e instanceof Error ? e.message : "Noma'lum xato");
     } finally {
       setLoading(false);
-      setIsRefreshClick(false);
     }
   }, [dateRange]);
 
@@ -100,26 +133,15 @@ export default function EmployeesPage() {
     : employees;
 
   const sorted = [...filtered].sort((a, b) => {
-    let av: number, bv: number;
     if (sortKey === "name") {
       const c = a.name.localeCompare(b.name);
       return sortDir === "asc" ? c : -c;
     }
-    if (sortKey === "missed_rate") {
-      av = a.inbound ? a.inbound_missed / a.inbound : 0;
-      bv = b.inbound ? b.inbound_missed / b.inbound : 0;
-    } else if (sortKey === "avg_talk") {
-      const answered = (e: EmployeeStat) => e.inbound_answered + e.outbound_success;
-      av = answered(a) ? a.total_talk_sec / answered(a) : 0;
-      bv = answered(b) ? b.total_talk_sec / answered(b) : 0;
-    } else {
-      av = (a[sortKey as keyof EmployeeStat] as number) ?? 0;
-      bv = (b[sortKey as keyof EmployeeStat] as number) ?? 0;
-    }
+    const av = (a[sortKey] as number) ?? 0;
+    const bv = (b[sortKey] as number) ?? 0;
     return sortDir === "asc" ? av - bv : bv - av;
   });
 
-  // KPI totals
   const T = filtered.reduce(
     (acc, e) => ({
       total: acc.total + e.total,
@@ -139,22 +161,15 @@ export default function EmployeesPage() {
     return <span className="text-blue-500 ml-0.5">{sortDir === "asc" ? "↑" : "↓"}</span>;
   }
 
-  function Th({ label, k, right }: { label: string; k: SortKey; right?: boolean }) {
+  function Th({ label, k, className = "" }: { label: string; k: SortKey; className?: string }) {
     return (
       <th
         onClick={() => toggleSort(k)}
-        className={`px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800 whitespace-nowrap ${right ? "text-right" : "text-left"}`}
+        className={`px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide cursor-pointer select-none hover:text-gray-800 whitespace-nowrap ${className}`}
       >
         {label}<SortIcon k={k} />
       </th>
     );
-  }
-
-  // Miss rate rang
-  function missedColor(rate: number) {
-    if (rate >= 0.3) return "text-red-600 font-semibold";
-    if (rate >= 0.15) return "text-orange-500 font-medium";
-    return "text-gray-600";
   }
 
   return (
@@ -165,7 +180,7 @@ export default function EmployeesPage() {
         end={formatPBX(dateRange.end)}
         onClose={() => setSelectedNumber(null)}
       />
-      {/* Top nav */}
+
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
         <div className="flex items-center px-4 gap-1 h-11 border-b border-gray-100 text-xs">
           <Link href="/" className="text-gray-400 hover:text-gray-600 font-medium uppercase tracking-wide">Biznes-analitika</Link>
@@ -190,7 +205,11 @@ export default function EmployeesPage() {
             <span className="text-gray-400 mr-3">{lastUpdated}</span>
           )}
           <DateRangePicker value={dateRange} onChange={setDateRange} />
-          <button onClick={() => { setIsRefreshClick(true); fetchData(true); }} disabled={loading} className="ml-2 p-1.5 border border-gray-200 rounded text-gray-400 hover:bg-gray-50 disabled:opacity-40 transition-colors">
+          <button
+            onClick={() => fetchData(true)}
+            disabled={loading}
+            className="ml-2 p-1.5 border border-gray-200 rounded text-gray-400 hover:bg-gray-50 disabled:opacity-40 transition-colors"
+          >
             <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -203,25 +222,33 @@ export default function EmployeesPage() {
           <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">{error}</div>
         )}
 
-        {/* KPI kartochkalar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          <KpiCard label="Jami qo'ng'iroq" value={T.total} color="text-gray-800" />
-          <KpiCard label="Kiruvchi" value={T.inbound} color="text-gray-700" />
-          <KpiCard label="Kiruvchi qabul" value={T.inbound_answered} sub={pct(T.inbound_answered, T.inbound)} color="text-green-600" />
-          <KpiCard label="Kiruvchi o'tkazib" value={T.inbound_missed} sub={pct(T.inbound_missed, T.inbound)} color="text-red-500" />
-          <KpiCard label="Chiquvchi" value={T.outbound} color="text-gray-700" />
-          <KpiCard label="Chiquvchi muvaffaq" value={T.outbound_success} sub={pct(T.outbound_success, T.outbound)} color="text-blue-600" />
-          <KpiCard label="Chiquvchi muvaffaqsiz" value={T.outbound_failed} sub={pct(T.outbound_failed, T.outbound)} color="text-orange-500" />
-          <KpiCard label="Suhbat vaqti" value={fmtDur(T.total_talk_sec)} color="text-indigo-600" />
+        {/* Umumiy statistika */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <TotalCard label="Jami qo'ng'iroqlar" value={T.total} />
+          <SummaryCard
+            label="Kiruvchi"
+            total={T.inbound}
+            success={T.inbound_answered}
+            successLabel="Qabul qilindi"
+            fail={T.inbound_missed}
+            failLabel="O'tkazib yuborildi"
+            colorTotal="text-gray-800"
+          />
+          <SummaryCard
+            label="Chiquvchi"
+            total={T.outbound}
+            success={T.outbound_success}
+            successLabel="Muvaffaqiyatli"
+            fail={T.outbound_failed}
+            failLabel="Muvaffaqiyatsiz"
+            colorTotal="text-gray-800"
+          />
         </div>
 
-        {/* Jadval */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          {/* Jadval header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-            <span className="text-sm font-semibold text-gray-700">
-              {filtered.length} xodim
-            </span>
+        {/* Xodimlar jadvali */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+            <span className="text-sm font-semibold text-gray-700">{filtered.length} xodim</span>
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" strokeLinecap="round" />
@@ -244,128 +271,105 @@ export default function EmployeesPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-gray-50 border-b border-gray-100">
+                  <tr className="bg-gray-50 border-b border-gray-200">
                     <th className="px-3 py-3 w-8 text-xs font-semibold text-gray-400">#</th>
-                    <Th label="Xodim" k="name" />
+                    <Th label="Xodim" k="name" className="text-left" />
+                    <Th label="Jami" k="total" className="text-right" />
 
-                    {/* Kiruvchi guruh */}
-                    <th className="px-3 py-3 text-xs font-semibold text-gray-400 text-center border-l border-gray-100" colSpan={4}>
-                      <span className="text-green-600">↙ Kiruvchi</span>
+                    {/* Chiquvchi */}
+                    <th className="px-3 py-3 text-xs font-semibold text-blue-500 text-center border-l border-gray-100 whitespace-nowrap">
+                      ↗ Chiquvchi
+                    </th>
+                    <th
+                      onClick={() => toggleSort("outbound_success")}
+                      className="px-3 py-3 text-xs font-semibold text-green-600 text-right cursor-pointer hover:text-green-800 whitespace-nowrap"
+                    >
+                      ✓ Muvaffaq<SortIcon k="outbound_success" />
+                    </th>
+                    <th
+                      onClick={() => toggleSort("outbound_failed")}
+                      className="px-3 py-3 text-xs font-semibold text-red-400 text-right cursor-pointer hover:text-red-600 whitespace-nowrap"
+                    >
+                      ✗ Muvaffaqsiz<SortIcon k="outbound_failed" />
                     </th>
 
-                    {/* Chiquvchi guruh */}
-                    <th className="px-3 py-3 text-xs font-semibold text-gray-400 text-center border-l border-gray-100" colSpan={3}>
-                      <span className="text-blue-600">↗ Chiquvchi</span>
+                    {/* Kiruvchi */}
+                    <th className="px-3 py-3 text-xs font-semibold text-emerald-500 text-center border-l border-gray-100 whitespace-nowrap">
+                      ↙ Kiruvchi
+                    </th>
+                    <th
+                      onClick={() => toggleSort("inbound_answered")}
+                      className="px-3 py-3 text-xs font-semibold text-green-600 text-right cursor-pointer hover:text-green-800 whitespace-nowrap"
+                    >
+                      ✓ Qabul<SortIcon k="inbound_answered" />
+                    </th>
+                    <th
+                      onClick={() => toggleSort("inbound_missed")}
+                      className="px-3 py-3 text-xs font-semibold text-red-400 text-right cursor-pointer hover:text-red-600 whitespace-nowrap"
+                    >
+                      ✗ O&apos;tkazib<SortIcon k="inbound_missed" />
                     </th>
 
                     {/* Vaqt */}
-                    <th className="px-3 py-3 text-xs font-semibold text-gray-400 text-center border-l border-gray-100" colSpan={2}>
-                      ⏱ Vaqt
-                    </th>
-                  </tr>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-3 py-2 w-8" />
-                    <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-left whitespace-nowrap">
-                      Xodim <SortIcon k="name" />
-                    </th>
-
-                    <th onClick={() => toggleSort("inbound")} className="px-3 py-2 text-xs font-semibold text-gray-500 text-right cursor-pointer hover:text-gray-800 whitespace-nowrap border-l border-gray-100">
-                      Jami <SortIcon k="inbound" />
-                    </th>
-                    <th onClick={() => toggleSort("inbound_answered")} className="px-3 py-2 text-xs font-semibold text-green-600 text-right cursor-pointer hover:text-green-800 whitespace-nowrap">
-                      Qabul <SortIcon k="inbound_answered" />
-                    </th>
-                    <th onClick={() => toggleSort("inbound_missed")} className="px-3 py-2 text-xs font-semibold text-red-500 text-right cursor-pointer hover:text-red-700 whitespace-nowrap">
-                      O&apos;tkazib <SortIcon k="inbound_missed" />
-                    </th>
-                    <th onClick={() => toggleSort("missed_rate")} className="px-3 py-2 text-xs font-semibold text-red-400 text-right cursor-pointer hover:text-red-600 whitespace-nowrap">
-                      % <SortIcon k="missed_rate" />
-                    </th>
-
-                    <th onClick={() => toggleSort("outbound")} className="px-3 py-2 text-xs font-semibold text-gray-500 text-right cursor-pointer hover:text-gray-800 whitespace-nowrap border-l border-gray-100">
-                      Jami <SortIcon k="outbound" />
-                    </th>
-                    <th onClick={() => toggleSort("outbound_success")} className="px-3 py-2 text-xs font-semibold text-blue-600 text-right cursor-pointer hover:text-blue-800 whitespace-nowrap">
-                      Muvaffaq <SortIcon k="outbound_success" />
-                    </th>
-                    <th onClick={() => toggleSort("outbound_failed")} className="px-3 py-2 text-xs font-semibold text-orange-500 text-right cursor-pointer hover:text-orange-700 whitespace-nowrap">
-                      Muvaffaqsiz <SortIcon k="outbound_failed" />
-                    </th>
-
-                    <th onClick={() => toggleSort("total_talk_sec")} className="px-3 py-2 text-xs font-semibold text-gray-500 text-right cursor-pointer hover:text-gray-800 whitespace-nowrap border-l border-gray-100">
-                      Umumiy <SortIcon k="total_talk_sec" />
-                    </th>
-                    <th onClick={() => toggleSort("avg_talk")} className="px-3 py-2 text-xs font-semibold text-gray-500 text-right cursor-pointer hover:text-gray-800 whitespace-nowrap">
-                      O&apos;rtacha <SortIcon k="avg_talk" />
-                    </th>
+                    <Th label="Suhbat vaqti" k="total_talk_sec" className="text-right border-l border-gray-100" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {sorted.map((emp, i) => {
-                    const missedRate = emp.inbound ? emp.inbound_missed / emp.inbound : 0;
-                    const answered = emp.inbound_answered + emp.outbound_success;
-                    return (
-                      <tr
-                        key={emp.number}
-                        onClick={() => setSelectedNumber(emp.number)}
-                        className="hover:bg-blue-50/60 transition-colors cursor-pointer"
-                      >
-                        <td className="px-3 py-2.5 text-gray-400 text-xs">{i + 1}</td>
-                        <td className="px-3 py-2.5">
-                          <div className="font-medium text-gray-800">{emp.name}</div>
-                          <div className="text-xs text-gray-400 font-mono">{emp.number}</div>
-                        </td>
+                  {sorted.map((emp, i) => (
+                    <tr
+                      key={emp.number}
+                      onClick={() => setSelectedNumber(emp.number)}
+                      className="hover:bg-blue-50/50 transition-colors cursor-pointer"
+                    >
+                      <td className="px-3 py-3 text-gray-400 text-xs">{i + 1}</td>
+                      <td className="px-3 py-3">
+                        <div className="font-medium text-gray-800">{emp.name}</div>
+                        <div className="text-xs text-gray-400 font-mono">{emp.number}</div>
+                      </td>
+                      <td className="px-3 py-3 text-right font-semibold text-gray-700">{emp.total || "—"}</td>
 
-                        {/* Kiruvchi */}
-                        <td className="px-3 py-2.5 text-right text-gray-700 border-l border-gray-100">{emp.inbound || "—"}</td>
-                        <td className="px-3 py-2.5 text-right text-green-600 font-medium">{emp.inbound_answered || "—"}</td>
-                        <td className="px-3 py-2.5 text-right">
-                          <span className={emp.inbound_missed > 0 ? "text-red-500 font-medium" : "text-gray-300"}>
-                            {emp.inbound_missed || "—"}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5 text-right">
-                          <span className={missedRate > 0 ? missedColor(missedRate) : "text-gray-300"}>
-                            {emp.inbound ? pct(emp.inbound_missed, emp.inbound) : "—"}
-                          </span>
-                        </td>
+                      {/* Chiquvchi */}
+                      <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">{emp.outbound || "—"}</td>
+                      <td className="px-3 py-3 text-right text-green-600 font-medium">{emp.outbound_success || "—"}</td>
+                      <td className="px-3 py-3 text-right">
+                        <span className={emp.outbound_failed > 0 ? "text-red-500" : "text-gray-300"}>
+                          {emp.outbound_failed || "—"}
+                        </span>
+                      </td>
 
-                        {/* Chiquvchi */}
-                        <td className="px-3 py-2.5 text-right text-gray-700 border-l border-gray-100">{emp.outbound || "—"}</td>
-                        <td className="px-3 py-2.5 text-right text-blue-600 font-medium">{emp.outbound_success || "—"}</td>
-                        <td className="px-3 py-2.5 text-right">
-                          <span className={emp.outbound_failed > 0 ? "text-orange-500" : "text-gray-300"}>
-                            {emp.outbound_failed || "—"}
-                          </span>
-                        </td>
+                      {/* Kiruvchi */}
+                      <td className="px-3 py-3 text-right text-gray-600 border-l border-gray-100">{emp.inbound || "—"}</td>
+                      <td className="px-3 py-3 text-right text-green-600 font-medium">{emp.inbound_answered || "—"}</td>
+                      <td className="px-3 py-3 text-right">
+                        <span className={emp.inbound_missed > 0 ? "text-red-500" : "text-gray-300"}>
+                          {emp.inbound_missed || "—"}
+                        </span>
+                      </td>
 
-                        {/* Vaqt */}
-                        <td className="px-3 py-2.5 text-right text-gray-600 font-mono text-xs border-l border-gray-100 whitespace-nowrap">
-                          {fmtDur(emp.total_talk_sec)}
-                        </td>
-                        <td className="px-3 py-2.5 text-right text-gray-500 font-mono text-xs whitespace-nowrap">
-                          {fmtAvg(emp.total_talk_sec, answered)}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      {/* Vaqt */}
+                      <td className="px-3 py-3 text-right font-mono text-xs text-gray-600 border-l border-gray-100 whitespace-nowrap">
+                        {fmtDur(emp.total_talk_sec)}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
-                {/* Jami */}
                 <tfoot>
-                  <tr className="bg-gray-50 border-t-2 border-gray-200">
+                  <tr className="bg-gray-50 border-t-2 border-gray-200 font-semibold">
                     <td className="px-3 py-3" colSpan={2}>
-                      <span className="text-xs font-semibold text-gray-600">Jami ({filtered.length} xodim)</span>
+                      <span className="text-xs text-gray-600">Jami ({filtered.length} xodim)</span>
                     </td>
-                    <td className="px-3 py-3 text-right font-semibold text-gray-700 border-l border-gray-100">{T.inbound}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-green-600">{T.inbound_answered}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-red-500">{T.inbound_missed}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-red-400">{pct(T.inbound_missed, T.inbound)}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-gray-700 border-l border-gray-100">{T.outbound}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-blue-600">{T.outbound_success}</td>
-                    <td className="px-3 py-3 text-right font-semibold text-orange-500">{T.outbound_failed}</td>
-                    <td className="px-3 py-3 text-right font-mono text-xs font-semibold text-gray-600 border-l border-gray-100 whitespace-nowrap">{fmtDur(T.total_talk_sec)}</td>
-                    <td className="px-3 py-3 text-right font-mono text-xs text-gray-500 whitespace-nowrap">
-                      {fmtAvg(T.total_talk_sec, T.inbound_answered + T.outbound_success)}
+                    <td className="px-3 py-3 text-right text-gray-800">{T.total}</td>
+
+                    <td className="px-3 py-3 text-right text-gray-700 border-l border-gray-100">{T.outbound}</td>
+                    <td className="px-3 py-3 text-right text-green-600">{T.outbound_success}</td>
+                    <td className="px-3 py-3 text-right text-red-500">{T.outbound_failed}</td>
+
+                    <td className="px-3 py-3 text-right text-gray-700 border-l border-gray-100">{T.inbound}</td>
+                    <td className="px-3 py-3 text-right text-green-600">{T.inbound_answered}</td>
+                    <td className="px-3 py-3 text-right text-red-500">{T.inbound_missed}</td>
+
+                    <td className="px-3 py-3 text-right font-mono text-xs text-gray-600 border-l border-gray-100 whitespace-nowrap">
+                      {fmtDur(T.total_talk_sec)}
                     </td>
                   </tr>
                 </tfoot>

@@ -88,7 +88,7 @@ export default function EmployeeDetailPanel({ number, start, end, onClose }: Pro
 
   const open = !!number;
 
-  const maxDayTotal = data
+  const maxDayTotal = data?.days?.length
     ? Math.max(...data.days.map(d => d.inbound + d.outbound), 1)
     : 1;
 
@@ -218,7 +218,7 @@ export default function EmployeeDetailPanel({ number, start, end, onClose }: Pro
 
           {!loading && data && tab === "days" && (
             <div className="p-5">
-              {data.days.length === 0 ? (
+              {(data.days ?? []).length === 0 ? (
                 <div className="text-center text-gray-400 text-sm py-12">Ma&apos;lumot yo&apos;q</div>
               ) : (
                 <table className="w-full text-xs">
@@ -235,7 +235,7 @@ export default function EmployeeDetailPanel({ number, start, end, onClose }: Pro
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {data.days.map(day => (
+                    {(data.days ?? []).map(day => (
                       <tr key={day.date} className="hover:bg-gray-50">
                         <td className="py-2 font-mono text-gray-600">{day.date}</td>
                         <td className="py-2 text-right text-gray-700">{day.inbound || "—"}</td>
@@ -257,10 +257,10 @@ export default function EmployeeDetailPanel({ number, start, end, onClose }: Pro
 
           {!loading && data && tab === "calls" && (
             <div className="divide-y divide-gray-100">
-              {data.recent_calls.length === 0 ? (
+              {(data.recent_calls ?? []).length === 0 ? (
                 <div className="text-center text-gray-400 text-sm py-12">Qo&apos;ng&apos;iroqlar topilmadi</div>
               ) : (
-                data.recent_calls.map((r, i) => {
+                (data.recent_calls ?? []).map((r, i) => {
                   const isIn = r.call_type === "Inbound";
                   const answered = r.disposition === "ANSWERED";
                   const external = isIn ? r.call_from_number : r.call_to_number;
