@@ -26,6 +26,7 @@ export async function fetchDayFull(isoDate: string): Promise<DayCache> {
 
   if (!cdrOk) {
     const err = cdrRes.status === "rejected" ? String(cdrRes.reason) : cdrRes.value.errmsg;
+    log.error("day-refresh", `fetchDayFull CDR xato: ${isoDate}`, { err });
     throw new Error(`CDR xato: ${err}`);
   }
 

@@ -101,7 +101,11 @@ export async function GET(req: NextRequest) {
 
     // Bugun cache da yo'q bo'lsa
     if (days.includes(today) && !cachedMap.has(today)) {
-      try { cachedMap.set(today, await fetchDayFull(today)); } catch { /* xatolik bo'lsa bo'sh */ }
+      try {
+        cachedMap.set(today, await fetchDayFull(today));
+      } catch (e: unknown) {
+        console.error("[employees] fetchDayFull xato:", String(e));
+      }
     }
 
     const allPBX: CDRRecord[] = [];

@@ -1,5 +1,6 @@
 import { CDRResponse } from "@/types/cdr";
 import { createClient } from "@supabase/supabase-js";
+import { log, timer } from "@/lib/logger";
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -31,7 +32,6 @@ interface TokenCache {
 
 let memCache: TokenCache | null = null;
 
-// Faqat hali o'tmagan tokenni qaytaradi
 async function readTokenKV(): Promise<TokenCache | null> {
   if (memCache && Date.now() < memCache.expiry) return memCache;
   try {
@@ -84,25 +84,30 @@ function saveTokens(access_token: string, refresh_token: string): TokenCache {
 }
 
 async function fetchNewToken(): Promise<TokenCache> {
-
+  log.info("yeastar", `Yangi token so'ramoqda: ${BASE_URL}`);
   const res = await fetchWithTimeout(`${BASE_URL}/openapi/v1.0/get_token`, {
     method: "POST",
     headers: COMMON_HEADERS,
     body: JSON.stringify({ username: CLIENT_ID, password: CLIENT_SECRET }),
   });
   const data = await res.json();
+  log.info("yeastar", `get_token javob: errcode=${data.errcode}`, { errmsg: data.errmsg });
   if (data.errcode !== 0) throw new Error(data.errmsg || "Token olishda xato");
+  log.ok("yeastar", "Yangi token olindi");
   return saveTokens(data.access_token, data.refresh_token);
 }
 
 async function doRefresh(refreshToken: string): Promise<TokenCache | null> {
+  log.info("yeastar", "refresh_token bilan token yangilash");
   const res = await fetchWithTimeout(`${BASE_URL}/openapi/v1.0/refresh_token`, {
     method: "POST",
     headers: COMMON_HEADERS,
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
   const data = await res.json();
+  log.info("yeastar", `refresh_token javob: errcode=${data.errcode}`, { errmsg: data.errmsg });
   if (data.errcode !== 0) return null;
+  log.ok("yeastar", "Token yangilandi (refresh)");
   return saveTokens(data.access_token, data.refresh_token);
 }
 
@@ -189,7 +194,9 @@ export async function queryCDR(
   pageNumber = 1,
   pageSize = 100
 ): Promise<CDRResponse> {
+  const elapsed = timer();
   const token = await getAccessToken();
+  log.info("yeastar", `CDR so'rov sahifa=${pageNumber}`, { startTime, endTime, pageSize });
 
   const params = new URLSearchParams({
     access_token: token,
@@ -200,11 +207,15 @@ export async function queryCDR(
   });
 
   const url = `${BASE_URL}/openapi/v1.0/cdr/search?${params.toString()}`;
-  // CDR sahifalash 2+ so'rov qiladi — har biri uchun 30s vaqt
   const res = await fetchWithTimeout(url, { headers: COMMON_HEADERS }, 30000);
 
-  if (!res.ok) throw new Error(`CDR so'rovda xato: ${res.status}`);
-  return res.json();
+  if (!res.ok) {
+    log.error("yeastar", `CDR HTTP xato: ${res.status}`, { startTime, endTime });
+    throw new Error(`CDR so'rovda xato: ${res.status}`);
+  }
+  const data: CDRResponse = await res.json();
+  log.info("yeastar", `CDR javob sahifa=${pageNumber}: errcode=${data.errcode}, jami=${data.total_number}, olingan=${data.data?.length ?? 0}`, { ms: elapsed(), errmsg: data.errmsg || undefined });
+  return data;
 }
 
 // Yeastar CDR API bir so'rovda maksimal 30 kun qabul qiladi.
@@ -217,7 +228,7 @@ export async function queryCDRChunked(
   pageSize = 100
 ): Promise<CDRResponse> {
   const startMs = parsePBXDate(startTime).getTime();
-  const endMs   = parsePBXDate(endTime).getTime();
+  const endMs = parsePBXDate(endTime).getTime();
   const chunkMs = CDR_CHUNK_DAYS * 24 * 60 * 60 * 1000;
 
   // Oraliq 30 kundan kichik bo'lsa sahifama-sahifa ketma-ket yuboramiz

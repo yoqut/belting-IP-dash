@@ -59,7 +59,11 @@ async function fetchAllRecords(start: string, end: string): Promise<CDRRecord[]>
 
   // Bugun keshda yo'q bo'lsa — PBX dan olamiz, xato bo'lsa bo'sh
   if (days.includes(today) && !cachedMap.has(today)) {
-    try { cachedMap.set(today, await fetchDayFull(today)); } catch { /* ignore */ }
+    try {
+      cachedMap.set(today, await fetchDayFull(today));
+    } catch (e: unknown) {
+      console.error("[employees/detail] fetchDayFull xato:", String(e));
+    }
   }
 
   const allPBX: CDRRecord[] = [];
