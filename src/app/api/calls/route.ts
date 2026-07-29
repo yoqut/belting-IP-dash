@@ -9,7 +9,6 @@ import { log, timer } from "@/lib/logger";
 import {
   getCachedDays,
   setCachedDay,
-  deleteCachedDay,
   splitRangeIntoDays,
   isoToPBXRange,
   isoToUnixRange,
@@ -94,8 +93,13 @@ function mzToUnified(c: MZCall, emailMap: Map<string, EmployeeLink>): UnifiedCal
 function computeStats(calls: UnifiedCall[]): UnifiedStats {
   const s: UnifiedStats = { all: calls.length, inbound: 0, answered: 0, missed: 0, outbound: 0, outbound_success: 0, outbound_failed: 0, internal: 0 };
   for (const c of calls) {
-    if (c.direction === "inbound")       { s.inbound++;  c.answered ? s.answered++ : s.missed++; }
-    else if (c.direction === "outbound") { s.outbound++; c.answered ? s.outbound_success++ : s.outbound_failed++; }
+    if (c.direction === "inbound") {
+      s.inbound++;
+      if (c.answered) s.answered++; else s.missed++;
+    } else if (c.direction === "outbound") {
+      s.outbound++;
+      if (c.answered) s.outbound_success++; else s.outbound_failed++;
+    }
     else s.internal++;
   }
   return s;
